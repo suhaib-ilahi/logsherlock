@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "LogSherlock"
+version = "1.0.0"
+description = "Interactive log debugging and incident investigation CLI"
+authors = [
+    { name = "Your Name" }
+]
+dependencies = [
+    "python-dateutil",
+    "rich"
+]
+requires-python = ">=3.9"
+
+[project.scripts]
+logsherlock = "logsherlock.analyzer:main"
+
+[tool.setuptools]
+packages = ["logsherlock"]
