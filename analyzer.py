@@ -2,13 +2,20 @@ import sys
 
 from repository import LogRepository
 from metrics import LogMetrics
+from ui import (
+    Paginator,
+    show_banner,
+    show_help,
+    print_message,
+    console
+)
 
 
 def load_repository():
     file_path = input("Enter log file path: ").strip()
 
     if not file_path:
-        print("No file path provided.")
+        print_message("No file path provided.", "red")
         sys.exit(1)
 
     repo = LogRepository()
@@ -17,21 +24,27 @@ def load_repository():
         repo.load(file_path)
 
     except FileNotFoundError:
-        print(f"Error: File not found -> {file_path}")
+        print_message(
+            f"File not found: {file_path}",
+            "red"
+        )
         sys.exit(1)
 
     except PermissionError:
-        print(f"Error: Permission denied -> {file_path}")
+        print_message(
+            f"Permission denied: {file_path}",
+            "red"
+        )
         sys.exit(1)
 
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        print_message(
+            f"Unexpected error: {e}",
+            "red"
+        )
         sys.exit(1)
 
-    print("\nLog file loaded successfully.")
-    print(f"Valid entries: {len(repo.entries)}")
-    print(f"Malformed entries: {len(repo.malformed_lines)}")
-    print("\nType 'help' for available commands.\n")
+    show_banner(repo)
 
     return repo
 
@@ -55,143 +68,108 @@ def command_slowest(repo):
         path = entry["path"]
 
         if path not in endpoint_stats:
-            endpoint_stats[path] = {"total": 0, "count": 0}
+            endpoint_stats[path] = {
+                "total": 0,
+                "count": 0
+            }
 
         endpoint_stats[path]["total"] += entry["response_time_ms"]
         endpoint_stats[path]["count"] += 1
 
-    averages = []
+    rows = []
 
     for endpoint, data in endpoint_stats.items():
         avg = data["total"] / data["count"]
-        averages.append((endpoint, avg))
 
-    averages.sort(key=lambda x: x[1], reverse=True)
+        rows.append({
+            "line_number": "-",
+            "raw_line": f"{endpoint} | {avg:.2f} ms"
+        })
 
-    print("\n===== TOP 10 SLOWEST ENDPOINTS =====\n")
+    rows.sort(
+        key=lambda x: float(
+            x["raw_line"].split("|")[1]
+            .replace("ms", "")
+            .strip()
+        ),
+        reverse=True
+    )
 
-    for endpoint, avg in averages[:10]:
-        print(f"{endpoint:<30} {avg:.2f} ms")
+    return rows
 
 
 def command_errors(repo):
-    print("\n===== ERROR LOGS (4xx / 5xx) =====\n")
-
-    found = False
+    results = []
 
     for entry in repo.entries:
         status = entry["status"]
 
         if status is not None and 400 <= status < 600:
-            print(f"Line {entry['line_number']}: {entry['raw_line']}")
-            found = True
+            results.append(entry)
 
-    if not found:
-        print("No error logs found.")
+    return results
 
 
 def command_anomalies(repo):
-    print("\n===== MALFORMED / ANOMALOUS LOGS =====\n")
-
-    if not repo.malformed_lines:
-        print("No malformed logs found.")
-        return
-
-    for item in repo.malformed_lines[:50]:
-        print(f"Line {item['line_number']}: {item['raw_line']}")
-        print(f"Reason: {item['reason']}\n")
-
-    if len(repo.malformed_lines) > 50:
-        print(f"... and {len(repo.malformed_lines) - 50} more")
+    return repo.malformed_lines
 
 
 def command_endpoint(repo, endpoint):
-    entries = repo.by_endpoint.get(endpoint, [])
+    results = []
 
-    print(f"\n===== ENDPOINT ANALYSIS: {endpoint} =====\n")
-
-    if entries:
-        total = len(entries)
-        avg = sum(e["response_time_ms"] for e in entries) / total
-
-        print(f"Total requests: {total}")
-        print(f"Average response time: {avg:.2f} ms\n")
-
-        print("Recent valid logs:\n")
-
-        for entry in entries[-20:]:
-            print(f"Line {entry['line_number']}: {entry['raw_line']}")
-
-    malformed_matches = []
+    results.extend(repo.get_endpoint_entries(endpoint))
 
     for item in repo.malformed_lines:
         if endpoint in item["raw_line"]:
-            malformed_matches.append(item)
+            results.append(item)
 
-    if malformed_matches:
-        print("\nMalformed/inconsistent matches:\n")
-
-        for item in malformed_matches[:20]:
-            print(f"Line {item['line_number']}: {item['raw_line']}")
-            print(f"Reason: {item['reason']}\n")
-
-    if not entries and not malformed_matches:
-        print("No matching logs found.")
+    return results
 
 
 def command_ip(repo, ip):
-    entries = repo.by_ip.get(ip, [])
+    results = []
 
-    print(f"\n===== IP TRACE: {ip} =====\n")
-
-    if entries:
-        print("Valid parsed entries:\n")
-
-        for entry in entries[-50:]:
-            print(f"Line {entry['line_number']}: {entry['raw_line']}")
-
-    malformed_matches = []
+    results.extend(repo.get_ip_entries(ip))
 
     for item in repo.malformed_lines:
         if ip in item["raw_line"]:
-            malformed_matches.append(item)
+            results.append(item)
 
-    if malformed_matches:
-        print("\nMalformed/inconsistent matches:\n")
-
-        for item in malformed_matches[:20]:
-            print(f"Line {item['line_number']}: {item['raw_line']}")
-            print(f"Reason: {item['reason']}\n")
-
-    if not entries and not malformed_matches:
-        print("No matching logs found.")
+    return results
 
 
-def show_help():
-    print("""
-Available commands:
+def command_status(repo, code):
+    try:
+        code = int(code)
+    except ValueError:
+        print_message("Invalid status code.", "red")
+        return []
 
-report                Show overall summary report
-slowest               Show top 10 slowest endpoints
-errors                Show all 4xx / 5xx error logs
-anomalies             Show malformed / inconsistent logs
-endpoint <path>       Inspect endpoint activity
-ip <address>          Trace activity by IP
-help                  Show this help
-exit                  Exit the tool
-""")
+    return repo.get_status_entries(code)
+
+
+def command_method(repo, method):
+    return repo.get_method_entries(method)
+
+
+def command_search(repo, query):
+    return repo.search_raw(query)
 
 
 def shell(repo):
+    paginator = Paginator()
+
+    show_help()
+
     while True:
         try:
-            command = input("loganalyzer> ").strip()
+            command = input("\nloganalyzer> ").strip()
 
             if not command:
                 continue
 
             if command == "exit":
-                print("Exiting Log Analyzer.")
+                print_message("Exiting Log Analyzer.", "yellow")
                 break
 
             elif command == "help":
@@ -201,27 +179,100 @@ def shell(repo):
                 command_report(repo)
 
             elif command == "slowest":
-                command_slowest(repo)
+                paginator.set_results(
+                    command_slowest(repo),
+                    "Top Slowest Endpoints"
+                )
+                paginator.render()
 
             elif command == "errors":
-                command_errors(repo)
+                paginator.set_results(
+                    command_errors(repo),
+                    "Error Logs"
+                )
+                paginator.render()
 
             elif command == "anomalies":
-                command_anomalies(repo)
+                paginator.set_results(
+                    command_anomalies(repo),
+                    "Malformed Logs"
+                )
+                paginator.render()
 
             elif command.startswith("endpoint "):
                 endpoint = command[len("endpoint "):].strip()
-                command_endpoint(repo, endpoint)
+
+                paginator.set_results(
+                    command_endpoint(repo, endpoint),
+                    f"Endpoint: {endpoint}"
+                )
+                paginator.render()
 
             elif command.startswith("ip "):
                 ip = command[len("ip "):].strip()
-                command_ip(repo, ip)
+
+                paginator.set_results(
+                    command_ip(repo, ip),
+                    f"IP Trace: {ip}"
+                )
+                paginator.render()
+
+            elif command.startswith("status "):
+                code = command[len("status "):].strip()
+
+                paginator.set_results(
+                    command_status(repo, code),
+                    f"Status {code}"
+                )
+                paginator.render()
+
+            elif command.startswith("method "):
+                method = command[len("method "):].strip()
+
+                paginator.set_results(
+                    command_method(repo, method),
+                    f"Method {method}"
+                )
+                paginator.render()
+
+            elif command.startswith("search "):
+                query = command[len("search "):].strip()
+
+                paginator.set_results(
+                    command_search(repo, query),
+                    f"Search: {query}"
+                )
+                paginator.render()
+
+            elif command == "next":
+                if paginator.next_page():
+                    paginator.render()
+                else:
+                    print_message(
+                        "Already at last page.",
+                        "yellow"
+                    )
+
+            elif command == "prev":
+                if paginator.prev_page():
+                    paginator.render()
+                else:
+                    print_message(
+                        "Already at first page.",
+                        "yellow"
+                    )
 
             else:
-                print("Unknown command. Type 'help'.")
+                print_message(
+                    "Unknown command. Type help.",
+                    "red"
+                )
 
         except KeyboardInterrupt:
-            print("\nExiting Log Analyzer.")
+            print_message(
+                "\nExiting Log Analyzer.",
+                "yellow"
+            )
             break
 
 
